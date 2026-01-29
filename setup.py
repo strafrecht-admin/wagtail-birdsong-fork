@@ -24,6 +24,12 @@ setup(
         "django-mjml",
         "Django>=5.0",
     ],
+    extras_require={
+        "ses": [
+            "boto3>=1.26.0",
+            "botocore>=1.29.0",
+        ],
+    },
     setup_requires=["wheel"],
     zip_safe=False,
     license="BSD License",
