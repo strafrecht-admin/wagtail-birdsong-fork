@@ -64,6 +64,12 @@ class Campaign(models.Model):
         choices=CampaignStatus.choices,
         default=CampaignStatus.UNSENT,
     )
+    backend_used = models.CharField(
+        verbose_name=_("backend used"),
+        max_length=100,
+        blank=True,
+        default="",
+    )
     # Send tracking fields for campaign progress
     send_total = models.IntegerField(
         verbose_name=_("total to send"),
@@ -92,6 +98,21 @@ class Campaign(models.Model):
         verbose_name=_("status message"),
         max_length=255,
         default="",
+    )
+    failure_reason = models.TextField(
+        verbose_name=_("failure reason"),
+        blank=True,
+        default="",
+    )
+    error_sample = models.JSONField(
+        verbose_name=_("recent errors"),
+        default=dict,
+        blank=True,
+    )
+    last_progress_update = models.DateTimeField(
+        verbose_name=_("last progress update"),
+        null=True,
+        blank=True,
     )
 
     panels = [
@@ -128,4 +149,20 @@ class Receipt(models.Model):
         verbose_name=_("error message"),
         blank=True,
         default="",
+    )
+    ses_message_id = models.CharField(
+        verbose_name=_("SES message id"),
+        max_length=191,
+        blank=True,
+        default="",
+    )
+    backend_response_code = models.CharField(
+        verbose_name=_("backend response code"),
+        max_length=32,
+        blank=True,
+        default="",
+    )
+    processed_at = models.DateTimeField(
+        verbose_name=_("processed at"),
+        auto_now_add=True,
     )
