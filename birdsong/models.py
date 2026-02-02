@@ -64,6 +64,35 @@ class Campaign(models.Model):
         choices=CampaignStatus.choices,
         default=CampaignStatus.UNSENT,
     )
+    # Send tracking fields for campaign progress
+    send_total = models.IntegerField(
+        verbose_name=_("total to send"),
+        null=True,
+        blank=True,
+    )
+    send_sent = models.IntegerField(
+        verbose_name=_("sent count"),
+        default=0,
+    )
+    send_failed = models.IntegerField(
+        verbose_name=_("failed count"),
+        default=0,
+    )
+    send_started_at = models.DateTimeField(
+        verbose_name=_("send started at"),
+        null=True,
+        blank=True,
+    )
+    send_finished_at = models.DateTimeField(
+        verbose_name=_("send finished at"),
+        null=True,
+        blank=True,
+    )
+    status_message = models.CharField(
+        verbose_name=_("status message"),
+        max_length=255,
+        default="",
+    )
 
     panels = [
         FieldPanel("name"),
@@ -95,3 +124,8 @@ class Receipt(models.Model):
     sent_date = models.DateTimeField(auto_now=True)
     # Probably not necessary, but might come in useful later
     success = models.BooleanField(default=True)
+    error_message = models.TextField(
+        verbose_name=_("error message"),
+        blank=True,
+        default="",
+    )
