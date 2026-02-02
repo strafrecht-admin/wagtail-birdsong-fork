@@ -12,7 +12,7 @@
     {% block content_main %}
         <div class="nice-padding">
             <div class="nice-padding">
-                <form action="{{ send_url }}" method="POST">
+                <form action="{{ send_url }}" method="POST" id="send-campaign-form">
                     {% csrf_token %}
                     <ul class="fields">
                         {% if form %}
@@ -31,5 +31,84 @@
                 </form>
             </div>
         </div>
+
+        <div id="send-progress" class="nice-padding" style="display:none;">
+            <h3>{% trans "Sending…" %}</h3>
+            <div class="progress-wrapper" style="margin-top: 1em;">
+                <div class="progress" style="background:#f5f5f5; height: 10px; border-radius: 6px;">
+                    <div id="progress-bar" style="width:0%; height:10px; background:#2d7ff9; border-radius:6px;"></div>
+                </div>
+                <p style="margin-top:0.5em;" id="progress-text">0%</p>
+                <p id="status-message" style="color:#666; margin-top:0.25em;"></p>
+            </div>
+            <div id="recent-errors" style="margin-top:1em; display:none;">
+                <strong>{% trans "Recent errors" %}</strong>
+                <ul id="error-list" style="margin-top:0.5em;"></ul>
+            </div>
+        </div>
     {% endblock %}
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>
+(function() {
+  const form = document.getElementById('send-campaign-form');
+  const progressBox = document.getElementById('send-progress');
+  const progressBar = document.getElementById('progress-bar');
+  const progressText = document.getElementById('progress-text');
+  const statusMessage = document.getElementById('status-message');
+  const errorList = document.getElementById('error-list');
+  const errorBox = document.getElementById('recent-errors');
+
+  function pollProgress(progressUrl) {
+    const interval = 3000;
+    function tick() {
+      fetch(progressUrl, {credentials: 'same-origin'})
+        .then(r => r.json())
+        .then(data => {
+          const total = data.progress.total || 0;
+          const sent = data.progress.sent || 0;
+          const failed = data.progress.failed || 0;
+          const processed = sent + failed;
+          const percent = total ? Math.floor((processed / total) * 100) : 0;
+          progressBar.style.width = `${percent}%`;
+          progressText.textContent = `${percent}% (${sent} / ${total})`;
+          statusMessage.textContent = data.status_message || '';
+
+          if (data.recent_errors && data.recent_errors.length) {
+            errorList.innerHTML = '';
+            data.recent_errors.forEach(err => {
+              const li = document.createElement('li');
+              li.textContent = `${err.email}: ${err.reason}`;
+              errorList.appendChild(li);
+            });
+            errorBox.style.display = 'block';
+          }
+
+          if (data.status_code === 2 || data.status_code === 3) {
+            statusMessage.textContent = data.status_message || data.status;
+            return;
+          }
+          setTimeout(tick, interval);
+        })
+        .catch(() => setTimeout(tick, interval));
+    }
+    tick();
+  }
+
+  if (form) {
+    form.addEventListener('submit', function() {
+      localStorage.setItem('newsletter_show_progress', '1');
+    });
+  }
+
+  const progressUrl = window.progressEndpoint || '{{ progress_url|default:"" }}';
+  if (localStorage.getItem('newsletter_show_progress') === '1' && progressUrl) {
+    localStorage.removeItem('newsletter_show_progress');
+    progressBox.style.display = 'block';
+    pollProgress(progressUrl);
+  }
+})();
+</script>
 {% endblock %}

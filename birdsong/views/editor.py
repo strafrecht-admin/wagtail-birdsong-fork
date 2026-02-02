@@ -1,3 +1,4 @@
+from django.core.paginator import EmptyPage, PageNotAnInteger, Paginator
 from django.http.response import JsonResponse
 from django.shortcuts import render
 from django.template.loader import render_to_string
@@ -14,13 +15,14 @@ def preview(request, campaign, test_contact):
     )
 
 
-def confirm_send(request, campaign, form, send_url, index_url):
+def confirm_send(request, campaign, form, send_url, index_url, progress_url=None):
     context = {
         'self': campaign,
         'form': form,
         'request': request,
         'send_url': send_url,
-        'index_url': index_url
+        'index_url': index_url,
+        'progress_url': progress_url,
     }
 
     return render(request, "birdsong/editor/send_confirm.html", context)
@@ -49,8 +51,30 @@ class InspectCampaign(InspectView):
             self.instance.get_template(self.request),
             self.instance.get_context(self.request, preview_contact),
         )
+        receipts_qs = self.instance.receipt_set.select_related("contact").order_by("-processed_at")
+        paginator = Paginator(receipts_qs, 50)
+        page_number = self.request.GET.get("page")
+        try:
+            receipts_page = paginator.page(page_number)
+        except PageNotAnInteger:
+            receipts_page = paginator.page(1)
+        except EmptyPage:
+            receipts_page = paginator.page(paginator.num_pages)
+
+        total_recipients = self.instance.send_total or paginator.count
+        sent = self.instance.send_sent
+        failed = self.instance.send_failed
+        processed = sent + failed
+        percent_done = int((processed / total_recipients) * 100) if total_recipients else 0
+
         context = {
-            'receipts': self.instance.receipt_set.all(),
+            'receipts': receipts_page.object_list,
+            'receipts_page': receipts_page,
+            'paginator': paginator,
+            'total_recipients': total_recipients,
+            'sent_count': sent,
+            'failed_count': failed,
+            'percent_done': percent_done,
             'preview': preview
         }
         context.update(kwargs)
