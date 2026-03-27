@@ -195,43 +195,51 @@ class SESEmailBackend(BaseEmailBackend):
             messages.append(message_data)
         
         if test_send:
-            # Test mode: send synchronously without threading
-            logger.info(f"Sending test campaign to {len(messages)} recipients")
+            # Synchronous send (used by the Celery task which handles its own batching).
+            # Returns a list of per-contact result dicts so the task can track individual
+            # success/failure.  Errors are caught per-message — a suppressed address or
+            # transient SES fault will NOT abort the rest of the batch.
+            rate_limit = getattr(settings, 'AWS_SES_RATE_LIMIT', 14)
+            logger.info(f"Sending campaign synchronously to {len(messages)} recipients (rate_limit={rate_limit}/sec)")
             ses_client = boto3.Session(
                 aws_access_key_id=getattr(settings, 'AWS_ACCESS_KEY_ID', None),
                 aws_secret_access_key=getattr(settings, 'AWS_SECRET_ACCESS_KEY', None),
                 region_name=getattr(settings, 'AWS_SES_REGION', 'eu-west-1')
             ).client('ses')
-            
-            for message in messages:
+
+            results = []
+            batch_start = time.time()
+            for i, message in enumerate(messages):
                 try:
                     response = ses_client.send_email(
                         Source=message['from_email'],
-                        Destination={
-                            'ToAddresses': message['to']
-                        },
+                        Destination={'ToAddresses': message['to']},
                         Message={
-                            'Subject': {
-                                'Data': message['subject'],
-                                'Charset': 'UTF-8'
-                            },
+                            'Subject': {'Data': message['subject'], 'Charset': 'UTF-8'},
                             'Body': {
-                                'Html': {
-                                    'Data': message.get('html_body', message.get('body', '')),
-                                    'Charset': 'UTF-8'
-                                },
-                                'Text': {
-                                    'Data': message.get('body', message.get('html_body', '')),
-                                    'Charset': 'UTF-8'
-                                }
-                            }
+                                'Html': {'Data': message.get('html_body', message.get('body', '')), 'Charset': 'UTF-8'},
+                                'Text': {'Data': message.get('body', message.get('html_body', '')), 'Charset': 'UTF-8'},
+                            },
                         },
-                        ReplyToAddresses=message.get('reply_to', [])
+                        ReplyToAddresses=message.get('reply_to', []),
                     )
-                    logger.info(f"Test email sent: MessageId={response.get('MessageId')}")
+                    msg_id = response.get('MessageId', '')
+                    logger.debug(f"Sent to {message['to']}: MessageId={msg_id}")
+                    results.append({'success': True, 'ses_message_id': msg_id, 'error_message': '', 'backend_response_code': 'ok'})
                 except (ClientError, BotoCoreError) as e:
-                    logger.error(f"Failed to send test email: {str(e)}")
-                    raise
+                    logger.error(f"Failed to send to {message['to']}: {e}")
+                    results.append({'success': False, 'ses_message_id': '', 'error_message': str(e), 'backend_response_code': 'ses_error'})
+
+                # Rate limiting: after every email, throttle to stay within rate_limit/sec
+                elapsed = time.time() - batch_start
+                expected = (i + 1) / rate_limit
+                if expected > elapsed:
+                    time.sleep(expected - elapsed)
+
+            sent = sum(1 for r in results if r['success'])
+            failed = len(results) - sent
+            logger.info(f"Batch complete: {sent} sent, {failed} failed")
+            return results
         else:
             # Production mode: send in background thread
             campaign_thread = SESCampaignThread(
