@@ -71,6 +71,7 @@ class SMTPEmailBackend(BaseEmailBackend):
         if test_send:
             # Don't mark as complete, don't worry about threading
             send_mass_html_mail(messages)
+            return [{"success": True, "backend_response_code": "smtp"} for _ in contacts]
         else:
             campaign_thread = SendCampaignThread(
                 campaign.pk, [c.pk for c in contacts], messages)
