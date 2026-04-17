@@ -15,6 +15,21 @@
             </tr>
             <tr>
                 <td class="title">
+                    <h2>{% trans "Backend" %}</h2>
+                </td>
+                <td>{{ instance.backend_used|default:"" }}</td>
+            </tr>
+            <tr>
+                <td class="title">
+                    <h2>{% trans "Status" %}</h2>
+                </td>
+                <td>
+                    {{ instance.get_status_display }}
+                    {% if instance.status_message %}<br><small>{{ instance.status_message }}</small>{% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td class="title">
                     <h2>{% trans "Sent date" %}</h2>
                 </td>
                 <td>{{ instance.sent_date }}</td>
@@ -23,14 +38,49 @@
                 <td class="title">
                     <h2>{% trans "No. Recipients" %}</h2>
                 </td>
-                <td>{{ receipts|length }}</td>
+                <td>{{ total_recipients }}</td>
+            </tr>
+            <tr>
+                <td class="title">
+                    <h2>{% trans "Sent" %}</h2>
+                </td>
+                <td id="sent-count">{{ instance.send_sent }}</td>
+            </tr>
+            <tr>
+                <td class="title">
+                    <h2>{% trans "Failed" %}</h2>
+                </td>
+                <td id="failed-count">{{ instance.send_failed }}</td>
             </tr>
         </tbody>
     </table>
 </section>
+
 {% endblock %}
+<section id="send-progress"
+         data-status="{{ instance.status }}"
+         data-total="{{ total_recipients }}"
+         data-sent="{{ sent_count }}"
+         data-failed="{{ failed_count }}"
+         data-status-message="{{ instance.status_message }}"
+         data-backend="{{ instance.backend_used }}"
+         data-progress-url="{% url 'newsletter_progress' instance.id %}" data-progress-stream-url="{% url 'newsletter_progress_stream' instance.id %}">
+    <h2>{% trans "Send progress" %}</h2>
+    <div class="progress-wrapper" style="margin-top: 0.75em; max-width: 420px;">
+        <div class="progress" style="background:#f5f5f5; height: 10px; border-radius: 6px; overflow:hidden;">
+            <div id="progress-bar" style="width:{{ percent_done }}%; height:10px; background:#2d7ff9; border-radius:6px;"></div>
+        </div>
+        <p style="margin-top:0.35em;" id="progress-text">{{ percent_done }}% ({{ sent_count }} / {{ total_recipients }})</p>
+        <p id="progress-status" style="color:#666; margin-top:0.1em;">{{ instance.status_message }}</p>
+        <p style="color:#666; margin-top:0.1em;" id="progress-backend">{% trans "Backend" %}: {{ instance.backend_used|default:"" }}</p>
+    </div>
+    <div id="recent-errors" style="margin-top:0.75em; display:none;">
+        <strong>{% trans "Recent errors" %}</strong>
+        <ul id="error-list" style="margin-top:0.35em;"></ul>
+    </div>
+</section>
 {% block receipts %}
-{% if receipts %}
+{% if receipts_page %}
 <section>
     <h2>{% trans "Recipients" %}</h2>
     <table class="listing">
@@ -39,18 +89,40 @@
                 <th>{% trans "Contact" %}</th>
                 <th>{% trans "Success" %}</th>
                 <th>{% trans "Sent date" %}</th>
+                <th>{% trans "Error" %}</th>
+                <th>{% trans "Message Id" %}</th>
             </tr>
         </thead>
         <tbody>
-            {% for receipt in receipts %}
+            {% for receipt in receipts_page %}
             <tr>
                 <td>{{ receipt.contact }}</td>
                 <td>{{ receipt.success }}</td>
-                <td>{{ receipt.sent_date }}</td>
+                <td>{{ receipt.processed_at|default:receipt.sent_date }}</td>
+                <td>{{ receipt.error_message }}</td>
+                <td>{{ receipt.ses_message_id }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    {% if paginator.num_pages > 1 %}
+    <div class="pagination">
+        <span class="step-links">
+            {% if receipts_page.has_previous %}
+                <a href="?page={{ receipts_page.previous_page_number }}">{% trans "Previous" %}</a>
+            {% endif %}
+            <span class="current">
+                {% trans "Page" %} {{ receipts_page.number }} / {{ paginator.num_pages }}
+            </span>
+            {% if receipts_page.has_next %}
+                <a href="?page={{ receipts_page.next_page_number }}">{% trans "Next" %}</a>
+            {% endif %}
+        </span>
+    </div>
+    {% endif %}
+    <p>
+        <a class="button button-secondary" href="{% url 'newsletter_receipts_csv' instance.id %}">{% trans "Download receipts CSV" %}</a>
+    </p>
 </section>
 {% endif %}
 <section>
@@ -60,4 +132,166 @@
     </div>
 </section>
 {% endblock %}
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>
+(function() {
+    const container = document.getElementById('send-progress');
+    if (!container) return;
+
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const statusText = document.getElementById('progress-status');
+    const backendText = document.getElementById('progress-backend');
+    const errorBox = document.getElementById('recent-errors');
+    const errorList = document.getElementById('error-list');
+    const sentCell = document.getElementById('sent-count');
+    const failedCell = document.getElementById('failed-count');
+    const refreshBtn = document.getElementById('refresh-progress-btn');
+
+    const progressUrl = container.dataset.progressUrl;
+    const progressStreamUrl = container.dataset.progressStreamUrl;
+    const pollInterval = 3000;
+    let isPolling = false;
+    let eventSource = null;
+    let lastUpdateAt = Date.now();
+    let lastStatusCode = Number(container.dataset.status) || 0;
+
+    function renderProgress(total, sent, failed, statusMessage, backend, errors, statusCode) {
+        const processed = sent + failed;
+        const percent = total ? Math.floor((processed / total) * 100) : 0;
+
+        progressBar.style.width = `${percent}%`;
+        progressText.textContent = `${percent}% (${sent} / ${total})`;
+        statusText.textContent = statusMessage || '';
+        backendText.textContent = 'Backend: ' + (backend || '');
+
+        if (sentCell) sentCell.textContent = sent;
+        if (failedCell) failedCell.textContent = failed;
+
+        if (errors && errors.length) {
+            errorList.innerHTML = '';
+            errors.forEach(err => {
+                const li = document.createElement('li');
+                li.textContent = `${err.email}: ${err.reason}`;
+                errorList.appendChild(li);
+            });
+            errorBox.style.display = 'block';
+        } else {
+            errorBox.style.display = 'none';
+        }
+
+        return statusCode;
+    }
+
+    function renderFromTemplate() {
+        const total = Number(container.dataset.total) || 0;
+        const sent = Number(container.dataset.sent) || 0;
+        const failed = Number(container.dataset.failed) || 0;
+        const statusMessage = container.dataset.statusMessage || '';
+        const backend = container.dataset.backend || '';
+        lastStatusCode = Number(container.dataset.status) || 0;
+        renderProgress(total, sent, failed, statusMessage, backend, [], lastStatusCode);
+        lastUpdateAt = Date.now();
+    }
+
+    function fetchProgress() {
+        if (!progressUrl) return Promise.resolve();
+        return fetch(progressUrl, { credentials: 'same-origin' })
+            .then(r => r.json())
+            .then(data => {
+                lastStatusCode = renderProgress(
+                    data.progress?.total || 0,
+                    data.progress?.sent || 0,
+                    data.progress?.failed || 0,
+                    data.status_message || '',
+                    data.backend || '',
+                    data.recent_errors || [],
+                    data.status_code
+                );
+                lastUpdateAt = Date.now();
+            })
+            .catch(() => {
+                renderFromTemplate();
+            });
+    }
+
+    function startSSE() {
+        if (!window.EventSource || !progressStreamUrl) return false;
+        try {
+            eventSource = new EventSource(progressStreamUrl, { withCredentials: true });
+        } catch (e) {
+            return false;
+        }
+
+        eventSource.onmessage = function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                lastStatusCode = renderProgress(
+                    data.progress?.total || 0,
+                    data.progress?.sent || 0,
+                    data.progress?.failed || 0,
+                    data.status_message || '',
+                    data.backend || '',
+                    data.recent_errors || [],
+                    data.status_code
+                );
+                lastUpdateAt = Date.now();
+
+                if (data.status_code !== 1 && eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+            } catch (err) {
+                // ignore malformed messages
+            }
+        };
+
+        eventSource.onerror = function(err) {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            startPolling();
+            return false;
+        };
+
+        return true;
+    }
+
+    function startPolling() {
+        if (isPolling) return;
+        isPolling = true;
+        poll();
+    }
+
+    function poll() {
+        if (!isPolling) return;
+        fetchProgress().finally(() => {
+            if (lastStatusCode === 1) {
+                setTimeout(poll, pollInterval);
+            } else {
+                isPolling = false;
+            }
+        });
+    }
+
+    // Initial render from template data (always works)
+    renderFromTemplate();
+
+    // Prefer SSE if available; otherwise fall back to polling
+    if (!startSSE()) {
+        startPolling();
+    }
+
+    // Watchdog: if SSE stalls for 5s, start polling to keep UI updated
+    setInterval(() => {
+        if (lastStatusCode === 1 && Date.now() - lastUpdateAt > 5000) {
+            startPolling();
+        }
+    }, 5000);
+})();
+</script>
 {% endblock %}

@@ -115,12 +115,14 @@ class CampaignAdmin(ModelAdmin):
     def confirm_send(self, request, instance_pk):
         campaign = self.model.objects.get(pk=instance_pk)
         form = self.build_sending_form()
+        progress_url = self.url_helper.get_action_url("inspect", instance_pk=instance_pk)
         return editor_views.confirm_send(
             request,
             campaign,
             form,
             self.url_helper.get_action_url("send_campaign", instance_pk=instance_pk),
             self.url_helper.get_action_url("index"),
+            progress_url.replace("cms/", "api/newsletter/campaign/")[:-1] + "progress/",
         )
 
     def build_sending_form(self):
