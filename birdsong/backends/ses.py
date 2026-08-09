@@ -230,8 +230,11 @@ class SESEmailBackend(BaseEmailBackend):
                     )
                     logger.info(f"Test email sent: MessageId={response.get('MessageId')}")
                 except (ClientError, BotoCoreError) as e:
-                    logger.error(f"Failed to send test email: {str(e)}")
-                    raise
+                    # Match the production SESCampaignThread.run() behavior:
+                    # log the failure for this recipient and keep sending to
+                    # the rest of the test batch instead of aborting it.
+                    logger.error(f"Failed to send test email to {message['to']}: {str(e)}")
+                    continue
         else:
             # Production mode: send in background thread
             campaign_thread = SESCampaignThread(
